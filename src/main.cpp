@@ -1,0 +1,35 @@
+#include <Arduino.h>
+#include <MQ135.h>
+#include <DHTesp.h>
+
+#define gas_Pin 17
+
+#define DHTPIN 18
+#define DHTTYPE DHTesp::DHT11
+
+DHTesp dht;
+// put function declarations here:
+MQ135 mq135 = MQ135(gas_Pin);
+
+void setup() {
+    Serial.begin(115200);
+    delay(1000);
+    dht.setup(DHTPIN, DHTTYPE);
+}
+
+void loop() {
+    TempAndHumidity th = dht.getTempAndHumidity();
+    Serial.print("Temparature : ");
+    Serial.println(th.temperature);
+    Serial.print("Humidity : ");
+    Serial.println(th.humidity);
+    Serial.print("Rzero : ");
+    Serial.println(mq135.getRZero());
+    Serial.print("CO2 : ");
+    Serial.println(mq135.getCorrectedPPM(th.temperature, th.humidity));
+
+
+    delay(5000);
+  // put your main code here, to run repeatedly:
+}
+

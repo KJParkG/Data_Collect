@@ -1,0 +1,105 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <Arduino.h>
+#include <ArduinoJson.h>
+#include <MQ135.h>
+#include <DHTesp.h>
+#include "time.h"
+
+const char* ssid = "AtoZ_LAB";       // 와이파이 SSID
+const char* password = "atoz9897!"; // 와이파이 비밀번호
+const char* serverName = "192.168.219.106";
+const int serverPort = 8080;
+
+
+#define gas_Pin 17
+
+#define DHTPIN 18
+#define DHTTYPE DHTesp::DHT11
+
+DHTesp dht;
+// put function declarations here:
+MQ135 mq135 = MQ135(gas_Pin);
+
+const char* farmDeviceId = "PKJDEVICE";
+const char* ntpServer = "pool.ntp.org";
+const long  gmtOffset_sec = 9 * 3600; // 한국 시간(UTC+9)
+const int   daylightOffset_sec = 0;
+
+void sendSensordata();
+
+String getCurrentDateTime() {
+    struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    Serial.println("Failed to obtain time");
+    return "20240101000000"; // 시간 가져오기 실패 시 기본값
+  }
+  char timeString[15];
+  strftime(timeString, sizeof(timeString), "%Y%m%d%H%M%S", &timeinfo);
+  return String(timeString);
+}
+
+void setup() {
+  // put your setup code here, to run once:
+  Serial.begin(115200);
+
+  dht.setup(DHTPIN, DHTTYPE);
+
+  WiFi.begin(ssid, password);
+  int wifi_retries = 0;
+  while (WiFi.status() != WL_CONNECTED && wifi_retries < 20) { // 최대 10초간 시도
+    delay(500);
+    wifi_retries++;
+  }
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+
+  // 시간이 동기화될 때까지 잠시 기다립니다.
+  struct tm timeinfo;
+  while (!getLocalTime(&timeinfo)) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nTime synchronized");
+}
+
+void loop() {
+  sendSensordata();
+  delay(30000);
+  // put your main code here, to run repeatedly:
+}
+
+void sendSensordata(){
+  TempAndHumidity measurement = dht.getTempAndHumidity();
+  float h = measurement.humidity;
+  float t = measurement.temperature;
+  float c = mq135.getPPM();
+
+  StaticJsonDocument<256> doc;
+  doc["t"] = t;
+  doc["h"] = h;
+  doc["c"] = c;
+  doc["d"] = getCurrentDateTime();
+  doc["i"] = farmDeviceId;
+
+  String jsonString;
+  serializeJson(doc, jsonString);
+
+  HTTPClient http;
+  String apiUrl = "http://" + String(serverName) + ":" + String(serverPort) + "/FarmData/api/datainput.do";
+    if (http.begin(apiUrl)) {
+    http.addHeader("Content-Type", "application/json");
+    int httpResponseCode = http.POST(jsonString);
+
+    if (httpResponseCode > 0) {
+      Serial.printf("Sensor data sent. HTTP Response code: %d\n", httpResponseCode);
+      String payload = http.getString();
+      Serial.println(payload);
+    } else {
+      Serial.printf("Error on sending sensor data. Code: %d\n", httpResponseCode);
+    }
+    http.end(); // 연결 종료
+  } else {
+    Serial.println("HTTP connection failed!");
+  }
+}
+
