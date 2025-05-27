@@ -32,7 +32,7 @@ String getCurrentDateTime() {
     struct tm timeinfo;
   if (!getLocalTime(&timeinfo)) {
     Serial.println("Failed to obtain time");
-    return "20240101000000"; // 시간 가져오기 실패 시 기본값
+    return "20250526131113"; // 시간 가져오기 실패 시 기본값
   }
   char timeString[15];
   strftime(timeString, sizeof(timeString), "%Y%m%d%H%M%S", &timeinfo);
@@ -64,7 +64,7 @@ void setup() {
 
 void loop() {
   sendSensordata();
-  delay(30000);
+  delay(300000);
   // put your main code here, to run repeatedly:
 }
 
@@ -72,7 +72,7 @@ void sendSensordata(){
   TempAndHumidity measurement = dht.getTempAndHumidity();
   float h = measurement.humidity;
   float t = measurement.temperature;
-  float c = mq135.getPPM();
+  float c = mq135.getCorrectedPPM(measurement.temperature,measurement.humidity);
 
   StaticJsonDocument<256> doc;
   doc["t"] = t;

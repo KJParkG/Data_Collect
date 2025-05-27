@@ -1,0 +1,79 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include "SPIFFS.h"
+
+// WiFi 연결
+const char* ssid = "AtoZ_LAB";
+const char* password = "atoz9897!";
+const char* serverUrl = "http://192.168.219.106:8080/FarmData/fileUpload.do";
+
+void setup() {
+  Serial.begin(115200);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("WiFi Connected!");
+
+  if (!SPIFFS.begin(true)) {
+    Serial.println("SPIFFS Mount Failed");
+    return;
+  }
+
+  // WAV 파일이 있다고 가정
+  File audioFile = SPIFFS.open("/audio.wav", "r");
+  if (!audioFile) {
+    Serial.println("Failed to open WAV file");
+    return;
+  }
+
+  HTTPClient http;
+  WiFiClient client;
+
+  http.begin(client, serverUrl);
+  String boundary = "----ESP32Boundary";
+
+  http.addHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
+
+  // JSON 부분
+  String jsonMeta = "{\"num\":69964,\"filename\":\"EICD2024110400120241215185425.WAV\",\"awfile\":null,\"d\":\"20250527144223\",\"i\":\"PKJDEVICE\",\"kb\":5168,\"se\":30}";
+
+  String bodyStart = "--" + boundary + "\r\n"
+                     "Content-Disposition: form-data; name=\"metadata\"\r\n\r\n" +
+                     jsonMeta + "\r\n" +
+                     "--" + boundary + "\r\n"
+                     "Content-Disposition: form-data; name=\"file\"; filename=\"EICD2024110400120241215185425.WAV\"\r\n"
+                     "Content-Type: audio/wav\r\n\r\n";
+
+  String bodyEnd = "\r\n--" + boundary + "--\r\n";
+
+  int totalLength = bodyStart.length() + audioFile.size() + bodyEnd.length();
+
+  http.addHeader("Content-Length", String(totalLength));
+
+  // 직접 전송
+  int statusCode;
+  WiFiClient* stream = http.getStreamPtr();
+  stream->print(bodyStart);
+
+  // 파일 바이너리 전송
+  uint8_t buffer[512];
+  while (audioFile.available()) {
+    size_t readLen = audioFile.read(buffer, sizeof(buffer));
+    stream->write(buffer, readLen);
+  }
+  stream->print(bodyEnd);
+
+  statusCode = http.POST("");
+
+  Serial.printf("HTTP Response code: %d\n", statusCode);
+  String response = http.getString();
+  Serial.println("Response:");
+  Serial.println(response);
+
+  http.end();
+}
+
+void loop() {
+}

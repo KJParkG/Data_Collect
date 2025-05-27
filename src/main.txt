@@ -19,14 +19,10 @@ void setup() {
 
 void loop() {
     TempAndHumidity th = dht.getTempAndHumidity();
-    Serial.print("Temparature : ");
-    Serial.println(th.temperature);
-    Serial.print("Humidity : ");
-    Serial.println(th.humidity);
     Serial.print("Rzero : ");
     Serial.println(mq135.getRZero());
     Serial.print("CO2 : ");
-    Serial.println(mq135.getPPM());
+    Serial.println(mq135.getCorrectedPPM(th.temperature, th.humidity));
 
 
     delay(5000);

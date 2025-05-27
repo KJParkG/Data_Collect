@@ -7,14 +7,12 @@
 #define I2S_SCK 40
 #define I2S_PORT I2S_NUM_0
 
-// 오디오 녹음 설정 (PC쪽 파이썬 코드와 일치해야 함)
 const int sampleRate = 16000;
 const int bitDepth = 16;
 const int record_time = 30; // 녹음 시간 (초)
 
 void setup() {
   Serial.begin(115200); // PC와 통신할 속도 설정
-  Serial.println("PC로 오디오 데이터 전송을 시작하려면 ESP32의 RST 버튼을 누르세요.");
 
   // I2S 드라이버 설정 (이전과 동일)
   i2s_config_t i2s_config = {
