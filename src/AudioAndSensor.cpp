@@ -1,0 +1,325 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+#include <MQ135.h>
+#include <DHTesp.h>
+#include "time.h"
+#include "driver/i2s.h"
+
+//WiFi, 서버 변수
+const char* ssid = "AtoZ_LAB"; // WiFi 이름
+const char* password = "atoz9897!"; // WiFi 비밀번호
+const char* server_addr = "192.168.219.106";
+const int   server_port = 8080;
+const char* deviceId = "PKJDEVICE"; // 장치 ID
+
+// 서버 시간 가져오기
+const char* ntpServer = "pool.ntp.org";
+const long  gmtOffset_sec = 9 * 3600; // 한국 표준시(UTC+9)
+const int   daylightOffset_sec = 0;
+
+//센서 관련 설정 및 객체 선언
+#define DHTPIN 18
+#define DHTTYPE DHTesp::DHT11
+#define gas_Pin 17
+
+DHTesp dht;
+MQ135 mq135 = MQ135(gas_Pin);
+
+// 오디오 녹음 관련 설정 및 변수
+
+#define I2S_WS_PIN  41  // Word Select
+#define I2S_SD_PIN  42  // Serial Data
+#define I2S_SCK_PIN 40  // Serial Clock
+#define I2S_PORT    I2S_NUM_0
+
+const int SAMPLE_RATE = 44100; // 초당 샘플링 횟수
+const int BIT_DEPTH = 16; 
+const int NUM_CHANNELS = 1; // 1. 모노 2. 스테레오
+const int RECORD_SECONDS = 30; 
+
+const int WAV_HEADER_SIZE = 44;
+const uint32_t AUDIO_DATA_SIZE = RECORD_SECONDS * SAMPLE_RATE * NUM_CHANNELS * (BIT_DEPTH / 8);
+
+// 오디오 데이터를 저장할 PSRAM 버퍼
+int16_t* audio_buffer_psram = NULL;
+byte wav_header[WAV_HEADER_SIZE];
+
+// 함수 선언
+void sendSensordata();
+String getCurrentDateTime();
+void initI2S();
+void createWavHeader(byte* header, uint32_t audioDataSize);
+void recordAudio();
+void uploadWavFile();
+
+void setup(){
+    Serial.begin(9600);
+    delay(5000);
+    
+    // 온습도 센서 초기화
+    dht.setup(DHTPIN, DHTTYPE);
+    Serial.println("DHT11 sensor initialized.");
+
+    //wifi 연결
+    WiFi.begin(ssid,password);
+    while(WiFi.status() != WL_CONNECTED){
+        delay(1000);
+        Serial.println("Connecting to WiFi..");
+    }
+    Serial.println("WiFi connected.");
+    
+    // 시간 동기화
+    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+    struct tm timeinfo;
+    while (!getLocalTime(&timeinfo)){
+        delay(500);
+        Serial.println("Getting time...");
+    }
+    Serial.println("Time synchronized.");
+
+    // PSRAM 초기화
+    if (!psramInit()){
+        Serial.println("PSRAM not found.");
+    }
+    else {
+        audio_buffer_psram = (int16_t*)ps_malloc(AUDIO_DATA_SIZE);
+        if (audio_buffer_psram == NULL){
+            Serial.println("PSRAM buffer allocation FAILED!");
+        }
+        else {
+            Serial.println("PSRAM audio buffer allocated successfully.");
+        }
+    }
+    // I2S 초기화
+    initI2S();
+
+    Serial.println("Setup completed.");
+}
+
+void loop(){
+    Serial.println("<<<<< Starting Cycle >>>>>");
+
+    sendSensordata();
+
+    delay(2000);
+
+    if (audio_buffer_psram != NULL){
+        recordAudio();
+        createWavHeader(wav_header,AUDIO_DATA_SIZE);
+        uploadWavFile();
+    }
+    else{
+        Serial.println("PSRAM not found.");
+    }
+    
+    Serial.println("<<<<< Cycle Finished Waiting 5minutes >>>>>");
+    delay(300000);
+}
+
+String getCurrentDateTime() { // 현재 시간을 YYYYMMDDHHMMSS로 반환하는 함수
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo)) {
+        Serial.println("Failed to obtain time");
+        return "19700101000000"; // 시간 가져오기 실패 시 기본값
+    }
+    char timeString[15];
+    strftime(timeString, sizeof(timeString), "%Y%m%d%H%M%S", &timeinfo);
+    return String(timeString);
+}
+
+void sendSensordata(){ // 온습도, co2 농도 전송 함수
+    TempAndHumidity measurement = dht.getTempAndHumidity();
+    float h = measurement.humidity;
+    float t = measurement.temperature;
+    float c = mq135.getCorrectedPPM(measurement.temperature,measurement.humidity);
+    if (isnan(h) || isnan(t)) {
+        Serial.println("Failed to read from DHT sensor!");
+        return;
+    }
+    StaticJsonDocument<256> doc;
+    doc["t"] = t;
+    doc["h"] = h;
+    doc["c"] = c;
+    doc["d"] = getCurrentDateTime();
+    doc["i"] = deviceId;
+
+    String jsonString;
+    serializeJson(doc, jsonString);
+    HTTPClient http;
+    String apiUrl = "http://" + String(server_addr) + ":" + String(server_port) + "/FarmData/api/datainput.do";
+    if (http.begin(apiUrl)) {
+        http.addHeader("Content-Type", "application/json");
+        int httpResponseCode = http.POST(jsonString);
+
+    if (httpResponseCode > 0) {
+        Serial.printf("Sensor data sent. HTTP Response code: %d\n", httpResponseCode);
+        String payload = http.getString();
+        Serial.println(payload);
+    } else {
+        Serial.printf("Error on sending sensor data. Code: %d\n", httpResponseCode);
+    }
+        http.end(); // 연결 종료
+    } else {
+        Serial.println("HTTP connection failed!");
+    }
+}
+
+void initI2S() { // I2S 드라이버 초기화 함수
+    Serial.println("I2S Initializing...");
+    i2s_config_t i2s_config = {
+        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
+        .sample_rate = SAMPLE_RATE,
+        .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
+        .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+        .dma_buf_count = 8,
+        .dma_buf_len = 256,
+        .use_apll = false,
+        .tx_desc_auto_clear = false,
+        .fixed_mclk = 0
+    };
+    i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL);
+    const i2s_pin_config_t pin_config = {
+        .bck_io_num = I2S_SCK_PIN,
+        .ws_io_num = I2S_WS_PIN,
+        .data_out_num = I2S_PIN_NO_CHANGE,
+        .data_in_num = I2S_SD_PIN
+    };
+    i2s_set_pin(I2S_PORT, &pin_config);
+    Serial.println("I2S Initialized.");
+}
+
+void createWavHeader(byte* header, uint32_t audioDataSize) { // wav파일 헤더 생성
+    uint32_t fileSize = audioDataSize + WAV_HEADER_SIZE - 8;
+    uint32_t byteRate = SAMPLE_RATE * NUM_CHANNELS * (BIT_DEPTH / 8);
+    uint16_t blockAlign = NUM_CHANNELS * (BIT_DEPTH / 8);
+
+    header[0] = 'R'; header[1] = 'I'; header[2] = 'F'; header[3] = 'F';
+    memcpy(&header[4], &fileSize, 4);
+    header[8] = 'W'; header[9] = 'A'; header[10] = 'V'; header[11] = 'E';
+    header[12] = 'f'; header[13] = 'm'; header[14] = 't'; header[15] = ' ';
+    header[16] = 16; header[17] = 0; header[18] = 0; header[19] = 0;
+    header[20] = 1; header[21] = 0;
+    header[22] = NUM_CHANNELS; header[23] = 0;
+    memcpy(&header[24], &SAMPLE_RATE, 4);
+    memcpy(&header[28], &byteRate, 4);
+    memcpy(&header[32], &blockAlign, 2);
+    header[34] = BIT_DEPTH; header[35] = 0;
+    header[36] = 'd'; header[37] = 'a'; header[38] = 't'; header[39] = 'a';
+    memcpy(&header[40], &audioDataSize, 4);
+    
+    Serial.println("WAV header created.");
+}
+
+void recordAudio() { // 오디오를 녹음하여 PSRAM에 저장
+    Serial.printf("\n--- Starting %d seconds recording... ---\n", RECORD_SECONDS);
+    i2s_start(I2S_PORT);
+
+    size_t total_bytes_written_to_psram = 0;
+    const int i2s_read_buffer_size = 4096;
+    int8_t* i2s_read_buffer = (int8_t*)malloc(i2s_read_buffer_size);
+
+    if (i2s_read_buffer == NULL) {
+        Serial.println("Failed to allocate I2S read buffer!");
+        return;
+    }
+
+    while (total_bytes_written_to_psram < AUDIO_DATA_SIZE) {
+        size_t bytes_read_from_i2s = 0;
+        i2s_read(I2S_PORT, i2s_read_buffer, i2s_read_buffer_size, &bytes_read_from_i2s, pdMS_TO_TICKS(1000));
+        
+        if (bytes_read_from_i2s > 0) {
+            int samples_to_process = bytes_read_from_i2s / 4;
+            for (int i = 0; i < samples_to_process; i++) {
+                if (total_bytes_written_to_psram < AUDIO_DATA_SIZE) {
+                    int32_t sample32 = ((int32_t*)i2s_read_buffer)[i];
+                    audio_buffer_psram[total_bytes_written_to_psram / 2] = (int16_t)(sample32 >> 16);
+                    total_bytes_written_to_psram += 2;
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+
+    i2s_stop(I2S_PORT);
+    free(i2s_read_buffer);
+    Serial.println("Recording finished.");
+    Serial.printf("Total bytes written to PSRAM buffer: %u / %u\n", total_bytes_written_to_psram, AUDIO_DATA_SIZE);
+}
+
+void uploadWavFile() { // wav 파일을 서버에 업로드
+    Serial.println("\n--- Starting WAV File Upload ---");
+
+    WiFiClient client;
+    
+    Serial.printf("Connecting to server: %s:%d\n", server_addr, server_port);
+    if (!client.connect(server_addr, server_port)) {
+        Serial.println("Connection to server FAILED!");
+        return;
+    }
+    Serial.println("Connection SUCCESSFUL.");
+
+    String boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW";
+    String upload_path = "/FarmData/fileUpload.do";
+
+    // -- 폼 데이터 각 파트 생성 --
+    String head = "--" + boundary + "\r\n" +
+                  "Content-Disposition: form-data; name=\"i\"\r\n\r\n" +
+                  String(deviceId) + "\r\n";
+
+    String dateTime = getCurrentDateTime();
+    head += "--" + boundary + "\r\n" +
+            "Content-Disposition: form-data; name=\"d\"\r\n\r\n" +
+            dateTime + "\r\n";
+    
+    String filename = String(deviceId) + getCurrentDateTime() + ".wav";
+    head += "--" + boundary + "\r\n" +
+            "Content-Disposition: form-data; name=\"awfile\"; filename=\"" + filename + "\"\r\n" +
+            "Content-Type: audio/wav\r\n\r\n";
+
+    String tail = "\r\n--" + boundary + "--\r\n";
+    
+    // -- 전체 컨텐츠 길이 계산 --
+    uint32_t contentLength = head.length() + WAV_HEADER_SIZE + AUDIO_DATA_SIZE + tail.length();
+
+    // -- HTTP POST 요청 헤더 작성 --
+    client.println(String("POST ") + upload_path + " HTTP/1.1");
+    client.println(String("Host: ") + server_addr);
+    client.println("Connection: close");
+    client.println("Content-Type: multipart/form-data; boundary=" + boundary);
+    client.println(String("Content-Length: ") + contentLength);
+    client.println();
+
+    // -- 페이로드 전송 --
+    Serial.println("Sending WAV payload...");
+    client.print(head);
+    client.write((const byte*)wav_header, WAV_HEADER_SIZE);
+    client.write((const byte*)audio_buffer_psram, AUDIO_DATA_SIZE);
+    client.print(tail);
+    Serial.println("Payload sent.");
+
+    // -- 서버 응답 확인 (5초 타임아웃) --
+    Serial.println("Waiting for server response...");
+    unsigned long timeout = millis();
+    while (!client.available() && millis() - timeout < 5000) {
+        delay(10);
+    }
+    
+    if (!client.available()) {
+        Serial.println("No response from server.");
+    } else {
+        Serial.println("--- Server Response ---");
+        while(client.available()){
+            String line = client.readStringUntil('\n');
+            Serial.println(line);
+        }
+        Serial.println("-----------------------");
+    }
+
+    client.stop();
+    Serial.println("Upload process finished.");
+}

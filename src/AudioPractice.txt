@@ -7,7 +7,7 @@
 #define I2S_SCK 40
 #define I2S_PORT I2S_NUM_0
 
-const int sampleRate = 16000;
+const int sampleRate = 44100;
 const int bitDepth = 16;
 const int record_time = 30; // 녹음 시간 (초)
 

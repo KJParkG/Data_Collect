@@ -13,7 +13,7 @@ const char* password = "atoz9897!"; // 여기에 Wi-Fi 비밀번호를 입력하
 #define I2S_SCK_PIN  40  // Serial Clock
 #define I2S_PORT     I2S_NUM_0
 
-const int SAMPLE_RATE = 16000;
+const int SAMPLE_RATE = 44100;
 const int BIT_DEPTH = 16;
 const int NUM_CHANNELS = 1;
 const int RECORD_SECONDS = 30;
