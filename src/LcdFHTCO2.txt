@@ -1,0 +1,110 @@
+#include <SPI.h>
+#include <TFT_eSPI.h> // TFT_eSPI 라이브러리
+#include "DHTesp.h"     // DHT 센서 라이브러리
+#include <MQ135.h>
+// --- TFT LCD 설정 ---
+TFT_eSPI tft = TFT_eSPI(); // TFT 객체 생성 (User_Setup.h 파일에서 핀 설정)
+
+// --- DHT11 센서 설정 ---
+#define DHTPIN 4       // DHT11 데이터 핀이 연결된 GPIO 번호
+#define DHTTYPE DHTesp::DHT11  // DHT11 센서 타입
+DHTesp dht;
+
+// --- MQ-135 센서 설정 ---
+#define MQ135_AO_PIN 3 
+// MQ-135 아날로그 출력(AO) 핀이 연결된 GPIO 번호 (ADC1_CH0)
+MQ135 mq135 = MQ135(MQ135_AO_PIN);
+// MQ-135 관련 보정 값 (정확한 측정을 위해서는 실제 환경에서 보정이 필요합니다)
+// 이 값들은 예시이며, 실제 센서 및 환경에 따라 매우 다를 수 있습니다.
+// RZERO는 깨끗한 공기에서의 센서 저항값입니다. 먼저 이 값을 측정해야 합니다.
+// float RZERO = 76.67; // 예시 값 (실제로는 "MQ135_calibration" 스케치 등으로 측정 필요)
+// 이 예제에서는 아날로그 값 자체를 사용하고, 간단한 상대적 표시를 합니다.
+
+void setup() {
+  Serial.begin(115200);
+
+  // TFT LCD 초기화
+  tft.init();
+  tft.setRotation(1); // 화면 방향 설정 (0:세로, 1:가로, 2:세로반전, 3:가로반전)
+  tft.fillScreen(TFT_BLACK); // 배경색 검정
+  tft.setTextColor(TFT_WHITE, TFT_BLACK); // 글자색 흰색, 배경색 검정
+  tft.setTextSize(2); // 글자 크기
+
+  // DHT11 센서 초기화
+  dht.setup(DHTPIN, DHTTYPE);
+
+  // MQ-135 핀 모드 설정
+  pinMode(MQ135_AO_PIN, INPUT);
+
+  tft.setCursor(10, 10);
+  tft.println("Sensor Readings:");
+  
+  // MQ-135 예열 안내 (실제로는 더 긴 시간이 필요할 수 있음)
+  Serial.println("MQ-135 Warming up...");
+  tft.setCursor(10, 180);
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+  tft.println("MQ-135 Warming up...");
+  delay(5000); // 간단한 예열 시간 (실제로는 부족할 수 있음)
+  tft.fillRect(10, 180, 200, 10, TFT_BLACK); // 예열 메시지 지우기
+  tft.setTextSize(2);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+}
+
+void loop() {
+  // --- DHT11 센서 값 읽기 ---
+  float humidity = dht.getHumidity();
+  float temperature_c = dht.getTemperature(); // 섭씨 온도
+  // float temperature_f = dht.readTemperature(true); // 화씨 온도
+
+  // 센서 값 읽기 성공 여부 확인
+  if (isnan(humidity) || isnan(temperature_c)) {
+    Serial.println("Failed to read from DHT sensor!");
+    tft.setCursor(10, 40);
+    tft.setTextColor(TFT_RED, TFT_BLACK);
+    tft.println("DHT Error");
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  } else {
+    // LCD에 온도 표시
+    tft.setCursor(10, 40);
+    tft.printf("Temp: %.1f C  ", temperature_c); // 소수점 한자리까지
+
+    // LCD에 습도 표시
+    tft.setCursor(10, 70);
+    tft.printf("Humi: %.1f %%  ", humidity); // 소수점 한자리까지
+  }
+
+  // --- MQ-135 센서 값 읽기 ---
+  int mq135_analog_value = mq135.getCorrectedPPM(temperature_c, humidity);
+
+  // LCD에 MQ-135 아날로그 값 표시 (또는 PPM 추정치)
+  // 이 예제에서는 아날로그 값을 그대로 사용하고, 값에 따라 상대적인 공기질 상태를 표시합니다.
+  // CO2 PPM으로 변환하려면 복잡한 계산과 보정이 필요합니다.
+  tft.setCursor(10, 100);
+  tft.printf("AirQ(Raw): %d   ", mq135_analog_value);
+
+  // 간단한 공기질 상태 표시 (예시 임계값)
+  tft.setCursor(10, 130);
+  if (mq135_analog_value < 800) { // 이 값은 실제 환경에서 조정 필요
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.println("Air: Good       ");
+  } else if (mq135_analog_value < 1500) { // 이 값은 실제 환경에서 조정 필요
+    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+    tft.println("Air: Moderate   ");
+  } else {
+    tft.setTextColor(TFT_RED, TFT_BLACK);
+    tft.println("Air: Poor       ");
+  }
+  tft.setTextColor(TFT_WHITE, TFT_BLACK); // 다음 출력을 위해 기본 색상으로 복원
+
+  Serial.print("Temperature: ");
+  Serial.print(temperature_c);
+  Serial.print(" *C\t");
+  Serial.print("Humidity: ");
+  Serial.print(humidity);
+  Serial.print(" %\t");
+  Serial.print("MQ-135 Analog: ");
+  Serial.println(mq135_analog_value);
+
+  delay(2000); // 2초마다 센서 값 업데이트
+}

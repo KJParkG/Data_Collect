@@ -19,6 +19,7 @@ const char* ntpServer = "pool.ntp.org";
 const long  gmtOffset_sec = 9 * 3600; // 한국 표준시(UTC+9)
 const int   daylightOffset_sec = 0;
 
+#define coolTime 600000
 //센서 관련 설정 및 객체 선언
 #define DHTPIN 18
 #define DHTTYPE DHTesp::DHT11
@@ -114,8 +115,8 @@ void loop(){
         Serial.println("PSRAM not found.");
     }
     
-    Serial.println("<<<<< Cycle Finished Waiting 5minutes >>>>>");
-    delay(300000);
+    Serial.println("<<<<< Cycle Finished Waiting 10minutes >>>>>");
+    delay(coolTime);
 }
 
 String getCurrentDateTime() { // 현재 시간을 YYYYMMDDHHMMSS로 반환하는 함수
@@ -136,6 +137,8 @@ void sendSensordata(){ // 온습도, co2 농도 전송 함수
     float c = mq135.getCorrectedPPM(measurement.temperature,measurement.humidity);
     if (isnan(h) || isnan(t)) {
         Serial.println("Failed to read from DHT sensor!");
+        dht.setup(DHTPIN, DHTTYPE);
+        Serial.println("DHT11 sensor reset.");
         return;
     }
     StaticJsonDocument<256> doc;
@@ -244,7 +247,6 @@ void recordAudio() { // 오디오를 녹음하여 PSRAM에 저장
             }
         }
     }
-
     i2s_stop(I2S_PORT);
     free(i2s_read_buffer);
     Serial.println("Recording finished.");
@@ -268,15 +270,15 @@ void uploadWavFile() { // wav 파일을 서버에 업로드
 
     // -- 폼 데이터 각 파트 생성 --
     String head = "--" + boundary + "\r\n" +
-                  "Content-Disposition: form-data; name=\"i\"\r\n\r\n" +
-                  String(deviceId) + "\r\n";
+            "Content-Disposition: form-data; name=\"i\"\r\n\r\n" +
+            String(deviceId) + "\r\n";
 
     String dateTime = getCurrentDateTime();
     head += "--" + boundary + "\r\n" +
             "Content-Disposition: form-data; name=\"d\"\r\n\r\n" +
             dateTime + "\r\n";
     
-    String filename = String(deviceId) + getCurrentDateTime() + ".wav";
+    String filename = String(deviceId) + dateTime + ".wav";
     head += "--" + boundary + "\r\n" +
             "Content-Disposition: form-data; name=\"awfile\"; filename=\"" + filename + "\"\r\n" +
             "Content-Type: audio/wav\r\n\r\n";
