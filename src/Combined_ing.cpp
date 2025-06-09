@@ -2,10 +2,19 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-#include <MQ135.h>
+#include <MQunifiedsensor.h>
 #include <DHTesp.h>
+#include <TFT_eSPI.h> 
 #include "time.h"
 #include "driver/i2s.h"
+
+// --- 디스플레이 색상 정리 ---
+#define BG_COLOR      TFT_BLACK
+#define TITLE_COLOR   TFT_SILVER
+#define VALUE_COLOR   TFT_WHITE
+#define GOOD_COLOR    TFT_CYAN
+#define NORMAL_COLOR  TFT_ORANGE
+#define BAD_COLOR     TFT_RED
 
 //WiFi, 서버 변수
 const char* ssid = "AtoZ_LAB"; // WiFi 이름
@@ -16,29 +25,40 @@ const char* deviceId = "PKJDEVICE"; // 장치 ID
 
 // 서버 시간 가져오기
 const char* ntpServer = "pool.ntp.org";
-const long  gmtOffset_sec = 9 * 3600; // 한국 표준시(UTC+9)
-const int   daylightOffset_sec = 0;
+const long gmtOffset_sec = 9 * 3600;
+const int daylightOffset_sec = 0;
 
-#define coolTime 600000
-//센서 관련 설정 및 객체 선언
-#define DHTPIN 18
-#define DHTTYPE DHTesp::DHT11
-#define gas_Pin 17
+// --- MQ-135 센서 설정 ---
+#define board "LOLIN S3 PRO"
+#define Voltage_Resolution 3.3
+#define pin 2
+#define type "MQ-135" //MQ135
+#define ADC_Bit_Resolution 12 // 비트 수
+#define RatioMQ135CleanAir 0.6// RS / R0 = 0.6ppm -> CO2
 
+MQUnifiedsensor MQ135(board, Voltage_Resolution, ADC_Bit_Resolution, pin, type);
+
+// --- TFT LCD 설정 ---
+TFT_eSPI tft = TFT_eSPI(); // TFT 객체 생성
+
+// --- DHT11 센서 설정 ---
+#define DHTPIN 18       // DHT11 데이터 핀이 연결된 GPIO 번호
+#define DHTTYPE DHTesp::DHT11  // DHT11 센서 타입
 DHTesp dht;
-MQ135 mq135 = MQ135(gas_Pin);
 
-// 오디오 녹음 관련 설정 및 변수
+// --- IR 센서 설정 ---
+const int irpin = 17;
 
+// --- 오디오 녹음 관련 설정 ---
 #define I2S_WS_PIN  41  // Word Select
 #define I2S_SD_PIN  42  // Serial Data
 #define I2S_SCK_PIN 40  // Serial Clock
 #define I2S_PORT    I2S_NUM_0
 
 const int SAMPLE_RATE = 44100; // 초당 샘플링 횟수
-const int BIT_DEPTH = 16; 
+const int BIT_DEPTH = 16;
 const int NUM_CHANNELS = 1; // 1. 모노 2. 스테레오
-const int RECORD_SECONDS = 30; 
+const int RECORD_SECONDS = 30;
 
 const int WAV_HEADER_SIZE = 44;
 const uint32_t AUDIO_DATA_SIZE = RECORD_SECONDS * SAMPLE_RATE * NUM_CHANNELS * (BIT_DEPTH / 8);
@@ -48,6 +68,7 @@ int16_t* audio_buffer_psram = NULL;
 byte wav_header[WAV_HEADER_SIZE];
 
 // 함수 선언
+void updateDisplay(int co2_val, float temp, float humi);
 void sendSensordata();
 String getCurrentDateTime();
 void initI2S();
@@ -57,13 +78,48 @@ void uploadWavFile();
 
 void setup(){
     Serial.begin(115200);
-    delay(5000);
+    delay(1000);
+    // TFT LCD 초기화    
+    tft.init();
+    tft.setRotation(3);
+    tft.fillScreen(BG_COLOR);
     
     // 온습도 센서 초기화
     dht.setup(DHTPIN, DHTTYPE);
-    Serial.println("DHT11 sensor initialized.");
 
-    //wifi 연결
+    pinMode(pin, INPUT);
+
+    tft.setCursor(10, 10);
+    tft.println("Sensor Readings : ");
+
+    // 가스 센서 초기화
+    MQ135.setRegressionMethod(1);
+
+    MQ135.init();
+
+    MQ135.setRL(20000); // MQ135 RL = 20k ohm
+
+    // R0 값 계산 후 설정
+    float R0 = 0;
+    for (int i = 0; i < 10; i++) {
+        MQ135.update();
+        R0 += MQ135.calibrate(RatioMQ135CleanAir);
+        Serial.print(".");
+        delay(1000);
+    }
+    R0 = R0 / 10.0; // 평균 10회 값 계산
+    MQ135.setR0(R0);
+
+    tft.setCursor(10, 180);
+    tft.setTextSize(1);
+    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+    tft.println("Warm up...");
+    delay(5000);
+    tft.fillRect(10, 180, 200, 10, TFT_BLACK);
+    tft.setTextSize(2);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+
+    // 와이파이 연결
     WiFi.begin(ssid,password);
     while(WiFi.status() != WL_CONNECTED){
         delay(1000);
@@ -97,26 +153,103 @@ void setup(){
     initI2S();
 
     Serial.println("Setup completed.");
+
 }
 
 void loop(){
-    Serial.println("<<<<< Starting Cycle >>>>>");
-
-    sendSensordata();
-
-    delay(2000);
-
-    if (audio_buffer_psram != NULL){
-        recordAudio();
-        createWavHeader(wav_header,AUDIO_DATA_SIZE);
-        uploadWavFile();
-    }
-    else{
-        Serial.println("PSRAM not found.");
-    }
+    // --- 온습도 센서 값 읽기 ---
+    float humidity = dht.getHumidity(); // 습도
+    float temperature_c = dht.getTemperature(); // 섭씨 온도
+    //float temperature_f = dht.readTemperature(true); // 화씨 온도
     
-    Serial.println("<<<<< Cycle Finished Waiting 10minutes >>>>>");
-    delay(coolTime);
+    // --- 온습도 센서 유효값 확인 ---
+    if (isnan(humidity) || isnan(temperature_c)){
+        Serial.println("Failed to read from DHT sensor!");
+        tft.setCursor(10, 40);
+        tft.setTextColor(TFT_RED, TFT_BLACK);
+        tft.println("DHT Error");
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    }
+    else {
+    MQ135.update(); // 데이터를 업데이트하면 arduino가 아날로그 핀의 전압을 읽습니다
+
+    MQ135.setA(110.47); MQ135.setB(-2.862); // CO2 농도를 얻기위한 방정식 값 구성
+     // --- MQ-135 센서 값 읽기 ---
+    int mq135_analog_value = MQ135.readSensor();
+
+    updateDisplay(mq135_analog_value, temperature_c, humidity);
+
+    delay(1000); // 2초마다 센서값 업데이트
+}
+
+}
+
+void updateDisplay(int co2_val, float temp, float humi) {
+  
+  tft.fillScreen(BG_COLOR);
+
+  // --- CO2 (센서 원본 값) 표시 섹션 ---
+  tft.setTextColor(TITLE_COLOR, BG_COLOR);
+  tft.setTextSize(2);
+  tft.setCursor(20, 15);
+  tft.print("Air Quality (Sensor Value)");
+
+  // 값의 수준에 따라 색상 결정
+  // ★★★ 중요: 이 숫자 범위(600, 800)는 사용자의 센서가 출력하는 값에 맞춰 조정해야 합니다.
+  uint16_t val_color = GOOD_COLOR;
+  if (co2_val > 600) val_color = NORMAL_COLOR;
+  if (co2_val > 800) val_color = BAD_COLOR;
+
+  tft.setTextColor(val_color, BG_COLOR);
+  tft.setTextSize(4);
+  tft.setCursor(20, 45);
+  tft.print(co2_val); // 정수형 센서 값을 그대로 출력
+
+  tft.setTextSize(2);
+  tft.setCursor(140, 60);
+  tft.print("value");
+
+  // --- 상태 막대 그래프 ---
+  int bar_x = 20;
+  int bar_y = 95;
+  int bar_w = tft.width() - 40;
+  int bar_h = 15;
+  
+  // ★★★ 중요: 센서 값 범위(300~1000)를 실제 환경에 맞게 조정해야 합니다.
+  int fill_w = map(co2_val, 300, 1000, 0, bar_w);
+  if (fill_w > bar_w) fill_w = bar_w;
+  if (fill_w < 0) fill_w = 0;
+  
+  tft.drawRect(bar_x, bar_y, bar_w, bar_h, TFT_WHITE);
+  tft.fillRect(bar_x + 2, bar_y + 2, fill_w - 4, bar_h - 4, val_color);
+
+  // --- 구분선 ---
+  tft.drawFastHLine(0, 130, tft.width(), TFT_DARKGREY);
+
+  // --- 온습도 표시 섹션 ---
+  int bottom_y = 150;
+
+  // 온도
+  tft.setTextColor(TITLE_COLOR, BG_COLOR);
+  tft.setTextSize(2);
+  tft.setCursor(30, bottom_y);
+  tft.print("TEMP");
+  
+  tft.setTextColor(VALUE_COLOR, BG_COLOR);
+  tft.setTextSize(3);
+  tft.setCursor(30, bottom_y + 30);
+  tft.printf("%.1f C", temp);
+
+  // 습도
+  tft.setTextColor(TITLE_COLOR, BG_COLOR);
+  tft.setTextSize(2);
+  tft.setCursor(tft.width() / 2 + 30, bottom_y);
+  tft.print("HUMIDITY");
+
+  tft.setTextColor(VALUE_COLOR, BG_COLOR);
+  tft.setTextSize(3);
+  tft.setCursor(tft.width() / 2 + 30, bottom_y + 30);
+  tft.printf("%.1f %%", humi);
 }
 
 String getCurrentDateTime() { // 현재 시간을 YYYYMMDDHHMMSS로 반환하는 함수
@@ -134,7 +267,7 @@ void sendSensordata(){ // 온습도, co2 농도 전송 함수
     TempAndHumidity measurement = dht.getTempAndHumidity();
     float h = measurement.humidity;
     float t = measurement.temperature;
-    float c = mq135.getCorrectedPPM(measurement.temperature,measurement.humidity);
+    float c = MQ135.readSensor();
     if (isnan(h) || isnan(t)) {
         Serial.println("Failed to read from DHT sensor!");
         dht.setup(DHTPIN, DHTTYPE);

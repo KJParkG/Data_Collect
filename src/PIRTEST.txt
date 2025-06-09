@@ -1,0 +1,46 @@
+#include <Arduino.h>
+
+const int inputpin = 17; // Lolin S3 Pro의 GPIO 18
+
+unsigned long detectionStartTime = 0;
+const unsigned long requiredtime = 7000;
+
+bool motionDetected = false;
+
+void setup() {
+    pinMode(inputpin, INPUT);
+    Serial.begin(115200);
+    Serial.println("Lolin S3 Pro - PIR Sensor Test");
+    Serial.println("Waiting for sensor to settle (20 seconds)...");
+    delay(10000); // 센서 안정화 시간
+    Serial.println("Sensor ready!");
+}
+
+void loop() {
+    int sensor_output = digitalRead(inputpin);
+
+if (sensor_output == HIGH) {
+    // 움직임이 감지되었을 때
+    if (!motionDetected) {
+      // 이전에 움직임이 없었다면 (새로운 움직임 시작)
+      Serial.println("움직임 감지 시작! 타이머 시작");
+      detectionStartTime = millis(); // 현재 시간을 시작 시간으로 기록
+      motionDetected = true; // 감지 중 상태로 변경
+    }
+
+    // 현재 시간이 (시작 시간 + 7초)를 지났는지 확인
+    if (motionDetected && (millis() - detectionStartTime >= requiredtime)) {
+      Serial.println("7초간 지속적인 움직임 감지!");
+      
+      detectionStartTime = millis(); 
+    }
+
+  } else {
+    // 움직임이 감지되지 않았을 때
+    if (motionDetected) {
+      // 이전에 움직임이 감지되던 중이었다면 (움직임이 멈춤)
+      Serial.println("움직임 멈춤. 타이머 리셋.");
+      motionDetected = false; // 감지 상태 해제
+    }
+  }
+}
