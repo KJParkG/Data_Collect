@@ -25,12 +25,12 @@
 #include <MQUnifiedsensor.h>
 
 //Definitions
-#define placa "LOLIN S3 PRO"
+#define placa "ESP-32"
 #define Voltage_Resolution 3.3
-#define pin 17 //Analog input 0 of your arduino
+#define pin 2 //Analog input 0 of your arduino
 #define type "MQ-135" //MQ135
 #define ADC_Bit_Resolution 12 // For arduino UNO/MEGA/NANO
-#define RatioMQ135CleanAir 3.6//RS / R0 = 3.6 ppm  
+#define RatioMQ135CleanAir 0.5 // Rs/R0
 //#define calibration_button 13 //Pin to calibrate your sensor
 
 //Declare Sensor
@@ -39,28 +39,32 @@ MQUnifiedsensor MQ135(placa, Voltage_Resolution, ADC_Bit_Resolution, pin, type);
 void setup() {
   //Init the serial port communication - to debug the library
   Serial.begin(115200); //Init serial port
-
-  //Set math model to calculate the PPM concentration and the value of constants
   MQ135.setRegressionMethod(1);
   MQ135.setA(110.47); MQ135.setB(-2.862);
-
   MQ135.init();
-  MQ135.setRL(1);
-  MQ135.setR0(10.0);
+
+  //Set math model to calculate the PPM concentration and the value of constants
+  float R0 = 0;
+    for (int i = 0; i < 10; i++) {
+        MQ135.update();
+        R0 += MQ135.calibrate(RatioMQ135CleanAir);
+        Serial.print(i);
+        delay(1000);
+    }
+  MQ135.setR0(R0/10.0); // Set the R0 value
+
+  if(isinf(R0)) {Serial.println("Warning: Conection issue, R0 is infinite (Open circuit detected) please check your wiring and supply"); while(1);}
+  if(R0 == 0){Serial.println("Warning: Conection issue found, R0 is zero (Analog pin shorts to ground) please check your wiring and supply"); while(1);}
+  /*****************************  MQ CAlibration ********************************************/ 
+  MQ135.serialDebug(true);
 }
 
 
 
 void loop() {
-
-    MQ135.update();                         // 데이터를 업데이트하면 arduino가 아날로그 핀의 전압을 읽습니다
-
-    MQ135.setA(110.47); MQ135.setB(-2.862); // CO2 농도를 얻기위한 방정식 값 구성
-
-    float CO2 = MQ135.readSensor();   
-    
-    Serial.print("CO2= "); Serial.print(CO2); Serial.println(" ppm");   // 직렬 포트에 CO2 농도를 인쇄합니다.
-
-    delay(1000);
+    MQ135.update(); // 데이터를 업데이트하면 arduino가 아날로그 핀의 전압을 읽습니다
+    MQ135.readSensor();
+    MQ135.serialDebug();
+    delay(500);
   }
 

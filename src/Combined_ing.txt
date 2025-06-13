@@ -34,7 +34,7 @@ const int daylightOffset_sec = 0;
 #define pin 2
 #define type "MQ-135" //MQ135
 #define ADC_Bit_Resolution 12 // 비트 수
-#define RatioMQ135CleanAir 0.6// RS / R0 = 0.6ppm -> CO2
+#define RatioMQ135CleanAir 0.5// RS / R0 = 0.5ppm -> CO2
 
 MQUnifiedsensor MQ135(board, Voltage_Resolution, ADC_Bit_Resolution, pin, type);
 
@@ -79,11 +79,11 @@ void uploadWavFile();
 void setup(){
     Serial.begin(115200);
     delay(1000);
-    // TFT LCD 초기화    
+    // TFT LCD 초기화
     tft.init();
     tft.setRotation(3);
     tft.fillScreen(BG_COLOR);
-    
+        
     // 온습도 센서 초기화
     dht.setup(DHTPIN, DHTTYPE);
 
@@ -94,10 +94,9 @@ void setup(){
 
     // 가스 센서 초기화
     MQ135.setRegressionMethod(1);
-
+    MQ135.setA(110.47); MQ135.setB(-2.862);
     MQ135.init();
 
-    MQ135.setRL(20000); // MQ135 RL = 20k ohm
 
     // R0 값 계산 후 설정
     float R0 = 0;
@@ -172,14 +171,11 @@ void loop(){
     }
     else {
     MQ135.update(); // 데이터를 업데이트하면 arduino가 아날로그 핀의 전압을 읽습니다
-
-    MQ135.setA(110.47); MQ135.setB(-2.862); // CO2 농도를 얻기위한 방정식 값 구성
      // --- MQ-135 센서 값 읽기 ---
     int mq135_analog_value = MQ135.readSensor();
-
     updateDisplay(mq135_analog_value, temperature_c, humidity);
 
-    delay(1000); // 2초마다 센서값 업데이트
+    delay(2000); // 1초마다 센서값 업데이트
 }
 
 }
